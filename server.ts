@@ -19,6 +19,7 @@ import type {
   EmojiSizeSetting
 } from './src/utils/emblemsSystem.ts';
 import { extractYouTubeVideoId } from './src/utils/youtube.ts';
+import { socketFloodGuard } from './server/security/floodGuard.ts';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -462,6 +463,7 @@ export interface ConnectedUser {
   giftBadges?: string[]; // قائمة أيقونات الهدايا والأوسمة التكريمية بجانب الاسم
   isPmDisabled?: boolean;
   isGhost?: boolean; // حالة الدخول المخفي / المتخفي
+  isIncognito?: boolean; // وضع التصفح المتخفي
   isJailed?: boolean;
   joinedAt: number;
   sessionToken?: string;
@@ -1045,9 +1047,13 @@ export function getCrossBrowserHwId(fp?: string): string {
   if (dblPipe === -1) return '';
   const after = trimmed.slice(dblPipe + 2);
   const parts = after.split('|');
-  // Format: canvas|webgl|audio|localeFonts|screen|crossBrowserHw|uid.browser -> parts.length >= 7
+  // Format A: canvas|webgl|audio|localeFonts|screen|crossBrowserHw|uid.browser -> parts.length >= 7
   if (parts.length >= 7 && parts[5] && parts[5].length >= 5 && parts[5] !== 'hwerr') {
     return parts[5];
+  }
+  // Format B: standard 5-hash format from other chats (canvas|webgl|audio|localeFonts|screen|uid.browser)
+  if (parts.length >= 6 && parts[1] && parts[4] && parts[1] !== 'wglerr') {
+    return `${parts[1]}_${parts[4]}`;
   }
   return '';
 }
@@ -1980,6 +1986,28 @@ export function loadGlobalAppearance() {
   }
 }
 
+// Ultra-Fast Initial Appearance Endpoint: Delivers approved banner, logo, wallpaper and theme instantly on page boot
+app.get('/api/initial-appearance', (_req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=15, stale-while-revalidate=60');
+  const banner = globalAppearance.bannerUrl || emblemsConfig.falconChatBanner || DEFAULT_FALCON_CHAT_BANNER;
+  const logo = globalAppearance.logoUrl || emblemsConfig.falconAvatarIcon || DEFAULT_FALCON_AVATAR_ICON;
+  res.json({
+    success: true,
+    bannerUrl: banner,
+    logoUrl: logo,
+    theme: globalAppearance.theme || 'dark-gold',
+    fontFamily: globalAppearance.fontFamily || 'Cairo',
+    fontWeight: globalAppearance.fontWeight || 'default',
+    wallpaper: globalAppearance.wallpaper || 'default',
+    bubbleStyle: globalAppearance.bubbleStyle || 'modern',
+    generalWelcome: generalWelcomeSettings,
+    marqueeTicker: serverSecurity.marqueeTicker,
+    rolesConfig: rolesConfig,
+    rolePermissions: rolePermissions,
+    likesSettings: likesSettings
+  });
+});
+
 // Save / Load Functions
 export function saveMonitoredWords() {
   try {
@@ -2332,6 +2360,7 @@ export interface RegisteredMemberInfo {
   nameBannerUrl?: string; // رابط البنر / السوابر المصور للعضو بمقاس 500x50
   giftBadges?: string[]; // قائمة أيقونات الهدايا والأوسمة التكريمية بجانب الاسم
   isPmDisabled?: boolean;
+  isIncognito?: boolean;
   isJailed?: boolean;
   lastSeen?: number;
   visitors?: ProfileVisitorRecord[];
@@ -3340,6 +3369,21 @@ setInterval(() => {
 
 // Socket connection
 io.on('connection', (socket) => {
+  // High-performance socket anti-flood & rate limiter middleware
+  socket.use(([event], next) => {
+    // Whitelist heartbeats, latency pongs, and critical system hooks
+    if (event === 'keepAlivePing' || event === 'keepAlivePong' || event === 'disconnect') {
+      return next();
+    }
+    const user = users.find((u) => u.id === socket.id);
+    const isExempt = user && (isSupremeHassan(user) || user.role === 'admin' || user.role === 'super');
+    if (!socketFloodGuard.isAllowed(socket.id, Boolean(isExempt))) {
+      socket.emit('systemAlert', '⚠️ تم رصد إرسال فائق السرعة (Anti-Flood Guard). يرجى التمهل لثوانٍ قليلة.');
+      return;
+    }
+    next();
+  });
+
   // Determine real client IP and country flag across Cloudflare / proxies / direct
   const clientIp = getRealClientIp(socket);
   const cfCountry = (socket.handshake.headers['cf-ipcountry'] as string) || '';
@@ -4491,7 +4535,7 @@ io.on('connection', (socket) => {
   });
 
   // Restore Session without disconnect (استعادة الجلسة الفورية عند فتح قفل الشاشة أو عودة النت دون اعتباره دخول جديد)
-  socket.on('restoreSession', ({ sessionToken, username, room, deviceFingerprint }: { sessionToken?: string; username?: string; room?: string; deviceFingerprint?: string }) => {
+  socket.on('restoreSession', ({ sessionToken, username, room, deviceFingerprint, isIncognito }: { sessionToken?: string; username?: string; room?: string; deviceFingerprint?: string; isIncognito?: boolean }) => {
     cleanExpiredBans();
 
     let session = sessionToken ? activeSessions.get(sessionToken) : undefined;
@@ -4535,6 +4579,7 @@ io.on('connection', (socket) => {
           profileBg: member.profileBg,
           nameBannerUrl: member.nameBannerUrl,
           giftBadges: member.giftBadges || [],
+          isIncognito: typeof isIncognito === 'boolean' ? isIncognito : member.isIncognito,
           isJailed: member.isJailed,
           joinedAt: Date.now(),
           sessionToken: restoredToken,
@@ -4672,6 +4717,10 @@ io.on('connection', (socket) => {
       session.user.ipAddress = currentClientIp;
       session.user.deviceInfo = clientDevice;
       if (incomingFp) session.user.deviceFingerprint = incomingFp;
+      if (typeof isIncognito === 'boolean') {
+        session.user.isIncognito = isIncognito;
+        if (memberReg) memberReg.isIncognito = isIncognito;
+      }
       recordMemberAuditConnection(session.user.username, currentClientIp, clientDevice, session.user.flag || '🇾🇪', incomingFp || undefined);
 
       // Purge any duplicate records of this user across the users array
@@ -4685,6 +4734,7 @@ io.on('connection', (socket) => {
             users[i].ipAddress = currentClientIp;
             users[i].deviceInfo = clientDevice;
             if (incomingFp) users[i].deviceFingerprint = incomingFp;
+            if (typeof isIncognito === 'boolean') users[i].isIncognito = isIncognito;
             users[i].nameBannerUrl = session.user.nameBannerUrl;
             users[i].giftBadges = session.user.giftBadges;
             users[i].role = session.user.role;
@@ -5061,7 +5111,8 @@ io.on('connection', (socket) => {
       room: resolvedRoom,
       flag: resolvedCountry,
       isOnline: isUserOnline,
-      lastSeen: resolvedLastSeen
+      lastSeen: resolvedLastSeen,
+      isIncognito: Boolean(targetUser?.isIncognito || regMember?.isIncognito)
     });
 
     logMonitorEvent(
@@ -5178,8 +5229,18 @@ io.on('connection', (socket) => {
     broadcastAllUsers();
   });
 
-  // Sync Room Messages when user returns to foreground from background
+  // Sync Room Messages: In Clean Room Mode, do not backfill past room history when entering/switching rooms
   socket.on('syncRoomMessages', ({ roomId, lastTimestamp }: { roomId: string; lastTimestamp?: number }, callback) => {
+    // Clean Room Mode: If lastTimestamp is omitted or <= 0, do not restore past messages
+    if (typeof lastTimestamp !== 'number' || lastTimestamp <= 0) {
+      if (typeof callback === 'function') {
+        callback({ messages: [] });
+      } else {
+        socket.emit('syncedRoomMessages', { roomId, messages: [] });
+      }
+      return;
+    }
+
     const reqUser = users.find((u) => u.id === socket.id);
     const isAdminViewer = isSupremeHassan(reqUser) || reqUser?.role === 'admin' || reqUser?.role === 'super';
     const roomCfg = getRoomSettings(roomId || 'الغرفة العامة');
@@ -5188,12 +5249,8 @@ io.on('connection', (socket) => {
     const roomMsgs = chatHistory.filter(
       (m) => m.room.trim().toLowerCase() === targetRoom && (!m.isDeleted || canSeeDeleted)
     );
-    // If lastTimestamp is provided and > 0, return only messages newer than it.
-    // If lastTimestamp is omitted or 0, return recent room messages (up to 50) so backgrounded user receives missed messages.
     const roomLimit = messageRetentionLimits.roomMaxMessages || 200;
-    const missed = (typeof lastTimestamp === 'number' && lastTimestamp > 0)
-      ? roomMsgs.filter((m) => m.timestamp > lastTimestamp).slice(-roomLimit)
-      : roomMsgs.slice(-Math.min(roomLimit, 50));
+    const missed = roomMsgs.filter((m) => m.timestamp > lastTimestamp).slice(-roomLimit);
     if (typeof callback === 'function') {
       callback({ messages: missed });
     } else {
@@ -5407,7 +5464,8 @@ io.on('connection', (socket) => {
     flag,
     statusQuote,
     deviceFingerprint,
-    isGhost
+    isGhost,
+    isIncognito
   }: {
     username: string;
     room?: string;
@@ -5417,6 +5475,7 @@ io.on('connection', (socket) => {
     statusQuote?: string;
     deviceFingerprint?: string;
     isGhost?: boolean;
+    isIncognito?: boolean;
   }) => {
     const cleanUsername = sanitizeText(username);
     // Automatic default room: 'الغرفة العامة'
@@ -5797,6 +5856,7 @@ io.on('connection', (socket) => {
 
     if (reg) {
       reg.deviceFingerprint = clientFingerprint;
+      if (typeof isIncognito === 'boolean') reg.isIncognito = isIncognito;
       saveMembers();
     }
 
@@ -5840,6 +5900,7 @@ io.on('connection', (socket) => {
       deviceFingerprint: clientFingerprint,
       isJailed: isUserJailed,
       isGhost: isGhostUser,
+      isIncognito: Boolean(isIncognito),
       joinedAt: Date.now(),
       sessionToken: userSessionToken,
       lastActiveTime: Date.now(),
@@ -5912,10 +5973,8 @@ io.on('connection', (socket) => {
       socket.emit('roomPinnedMessageUpdated', roomPinnedMessages[targetRoom]);
     }
 
-    // Clear previous session messages ONLY on initial login, NOT when switching rooms
-    if (isNewLogin) {
-      socket.emit('chatHistory', []);
-    }
+    // Clean Room Mode: Always clear previous messages on room entrance/switch
+    socket.emit('chatHistory', []);
 
     // Send profile visitors for the logged-in user
     socket.emit('profileVisitorsUpdated', registeredMembers[cleanUsername]?.visitors || []);
@@ -8828,6 +8887,7 @@ io.on('connection', (socket) => {
 
   // Disconnect handler: Preserves presence across phone screen locks & background sleep
   socket.on('disconnect', () => {
+    socketFloodGuard.reset(socket.id);
     const disconnectedUser = users.find((u) => u.id === socket.id);
     if (disconnectedUser && disconnectedUser.room && disconnectedUser.room !== 'خارج الغرف') {
       socket.to(disconnectedUser.room).emit('userTyping', {

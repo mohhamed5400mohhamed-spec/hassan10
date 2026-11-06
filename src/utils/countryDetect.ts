@@ -392,3 +392,49 @@ export function generateDeviceFingerprint(): {
     };
   }
 }
+
+// Detect incognito / private browsing mode (كشف وضع التصفح المتخفي عتادياً)
+export async function detectIncognitoMode(): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  try {
+    // 1. Chrome / Chromium storage quota check (in incognito, quota is capped to <= 120MB or < 300MB)
+    if ('storage' in navigator && 'estimate' in navigator.storage) {
+      const { quota } = await navigator.storage.estimate();
+      if (quota && quota < 300 * 1024 * 1024) {
+        return true;
+      }
+    }
+  } catch {}
+
+  try {
+    // 2. Safari private browsing
+    const isSafari = /Safari/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent);
+    if (isSafari && typeof (window as any).openDatabase === 'function') {
+      try {
+        (window as any).openDatabase(null, null, null, null);
+      } catch {
+        return true;
+      }
+    }
+  } catch {}
+
+  try {
+    // 3. Firefox private browsing
+    const isFirefox = /Firefox/.test(navigator.userAgent);
+    if (isFirefox && typeof indexedDB !== 'undefined') {
+      const db = indexedDB.open('__test_incognito_probe__');
+      return new Promise<boolean>((resolve) => {
+        db.onerror = () => resolve(true);
+        db.onsuccess = () => {
+          try {
+            db.result.close();
+            indexedDB.deleteDatabase('__test_incognito_probe__');
+          } catch {}
+          resolve(false);
+        };
+      });
+    }
+  } catch {}
+
+  return false;
+}

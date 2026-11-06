@@ -141,7 +141,7 @@ import {
   setPresenceAwayDelayMs,
   uploadMediaWithProgress
 } from './utils/connectionKeepAlive';
-import { getCountryNameFromFlag, generateDeviceFingerprint } from './utils/countryDetect';
+import { getCountryNameFromFlag, generateDeviceFingerprint, detectIncognitoMode } from './utils/countryDetect';
 import {
   EmblemItem,
   EmblemType,
@@ -484,41 +484,61 @@ export default function App() {
     return DEFAULT_FALCON_AVATAR_ICON;
   });
 
+  // Fast pre-fetch of approved banner, logo, wallpaper and theme directly via HTTP (Zero Flash on First Load)
+  useEffect(() => {
+    let active = true;
+    fetch('/api/initial-appearance')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || !data || !data.success) return;
+        if (data.bannerUrl) {
+          setFalconChatBanner(data.bannerUrl);
+          try { localStorage.setItem('falcon_chat_banner', data.bannerUrl); } catch {}
+        }
+        if (data.logoUrl) {
+          setFalconAvatarIcon(data.logoUrl);
+          try { localStorage.setItem('falcon_avatar_icon', data.logoUrl); } catch {}
+        }
+        if (data.theme) {
+          setActiveTheme(data.theme);
+          try { localStorage.setItem('soqoor_theme', data.theme); } catch {}
+        }
+        if (data.wallpaper) {
+          setActiveWallpaper(data.wallpaper);
+          try { localStorage.setItem('soqoor_wallpaper', data.wallpaper); } catch {}
+        }
+        if (data.fontFamily) {
+          setFontFamily(data.fontFamily);
+          try { localStorage.setItem('soqoor_font_family', data.fontFamily); } catch {}
+        }
+        if (data.fontWeight) {
+          setChatFontWeight(data.fontWeight);
+          try { localStorage.setItem('soqoor_font_weight', data.fontWeight); } catch {}
+        }
+        if (data.bubbleStyle) {
+          setBubbleStyle(data.bubbleStyle);
+          try { localStorage.setItem('soqoor_bubble_style', data.bubbleStyle); } catch {}
+        }
+        setAppearanceReady(true);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
   useEffect(() => {
     if (appearanceReady) {
       document.body.classList.remove('app-booting');
     }
   }, [appearanceReady]);
 
-  // The first public screen is intentionally gated by `initialRoster`, which carries
-  // the server's shared appearance. Do not reveal the cached/default theme on a
-  // timeout: doing so causes a visible flash when MongoDB/Railway responds later.
-
-  // Chat Data & Stream (Screenshot 2)
-  // Preserved in sessionStorage for this browser tab session;
-  // Automatically wiped by the browser when the tab/browser is closed permanently,
-  // or on direct explicit logout!
-  const [messages, setMessages] = useState<Message[]>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = sessionStorage.getItem('soqoor_room_messages');
-        if (saved) return JSON.parse(saved);
-      } catch {}
-    }
-    return [];
-  });
+  // Clean Room Mode: Messages start clean and empty on room entry/switch (No past messages backfill)
+  const [messages, setMessages] = useState<Message[]>([]);
   const messagesRef = useRef<Message[]>(messages);
   useEffect(() => {
     messagesRef.current = messages;
-    try {
-      if (messages.length > 0) {
-        const pruned = pruneMessagesByRoomLimit(messages, messageRetentionLimitsRef.current?.roomMaxMessages || 200);
-        sessionStorage.setItem('soqoor_room_messages', JSON.stringify(pruned));
-      } else {
-        sessionStorage.removeItem('soqoor_room_messages');
-      }
-    } catch {}
-  }, [messages, pruneMessagesByRoomLimit]);
+  }, [messages]);
   const [textInput, setTextInput] = useState('');
 
   // Typing Indicator State & Refs (حالة ومؤقتات الأعضاء الذين يكتبون الآن في نفس الغرفة)
@@ -702,8 +722,17 @@ export default function App() {
     flag: string;
     isOnline: boolean;
     lastSeen?: string;
+    isIncognito?: boolean;
   } | null>(null);
   const [showRevealedNicksModal, setShowRevealedNicksModal] = useState(false);
+
+  // Client Incognito / Private Browsing mode detection probe
+  const [isIncognitoClient, setIsIncognitoClient] = useState<boolean>(false);
+  useEffect(() => {
+    detectIncognitoMode().then((isIncog) => {
+      if (isIncog) setIsIncognitoClient(true);
+    });
+  }, []);
 
   // Unread Wall Posts Counter State (عداد رسائل ومنشورات الحائط الجديدة)
   const [unreadWallCount, setUnreadWallCount] = useState<number>(0);
@@ -1143,7 +1172,13 @@ export default function App() {
   });
   // These are only first-paint fallbacks. The persisted admin values arrive from
   // the server's globalAppearance payload and replace them before the app is shown.
-  const [activeTheme, setActiveTheme] = useState<string>('dark-gold');
+  const [activeTheme, setActiveTheme] = useState<string>(() => {
+    try {
+      return localStorage.getItem('soqoor_theme') || 'dark-gold';
+    } catch {
+      return 'dark-gold';
+    }
+  });
   const [pinnedTopic, setPinnedTopic] = useState<string>('');
   const [userMood, setUserMood] = useState<string>(() => {
     try {
@@ -1188,8 +1223,20 @@ export default function App() {
   const [showIdentityStudio, setShowIdentityStudio] = useState<boolean>(false);
   const [showThemesModal, setShowThemesModal] = useState<boolean>(false);
   const [showDiagnosticsModal, setShowDiagnosticsModal] = useState<boolean>(false);
-  const [activeWallpaper, setActiveWallpaper] = useState<string>('default');
-  const [fontFamily, setFontFamily] = useState<string>('Cairo');
+  const [activeWallpaper, setActiveWallpaper] = useState<string>(() => {
+    try {
+      return localStorage.getItem('soqoor_wallpaper') || 'default';
+    } catch {
+      return 'default';
+    }
+  });
+  const [fontFamily, setFontFamily] = useState<string>(() => {
+    try {
+      return localStorage.getItem('soqoor_font_family') || 'Cairo';
+    } catch {
+      return 'Cairo';
+    }
+  });
   const [chatFontWeight, setChatFontWeight] = useState<'thin' | 'normal' | 'default' | 'bold' | 'black'>(() => {
     try {
       const saved = localStorage.getItem('soqoor_chat_font_weight');
@@ -1206,7 +1253,13 @@ export default function App() {
       document.documentElement.removeAttribute('data-chat-font-weight');
     }
   }, [chatFontWeight]);
-  const [bubbleStyle, setBubbleStyle] = useState<string>('modern');
+  const [bubbleStyle, setBubbleStyle] = useState<string>(() => {
+    try {
+      return localStorage.getItem('soqoor_bubble_style') || 'modern';
+    } catch {
+      return 'modern';
+    }
+  });
   const [customThemes, setCustomThemes] = useState<CustomThemePreset[]>(() => {
     try {
       const saved = localStorage.getItem('soqoor_custom_themes');
@@ -2221,9 +2274,8 @@ export default function App() {
       autoConnect: true
     };
     const s = remoteServerUrl ? io(remoteServerUrl, socketOptions) : io(socketOptions);
-    // Never leave users on a blank screen when the API is temporarily unreachable.
-    // The shared appearance will still replace these defaults when the socket connects.
-    const appearanceFallbackTimer = window.setTimeout(() => setAppearanceReady(true), 600);
+    // Safety fallback only if network/API is completely unresponsive after 3.5 seconds
+    const appearanceFallbackTimer = window.setTimeout(() => setAppearanceReady(true), 3500);
 
     s.on('connect', () => {
       if (reconnectBannerTimerRef.current) {
@@ -2247,7 +2299,8 @@ export default function App() {
           sessionToken: savedToken || undefined,
           username: savedUsername,
           room: currentUserRef.current?.room || 'الغرفة العامة',
-          deviceFingerprint: generateDeviceFingerprint().fingerprintId
+          deviceFingerprint: generateDeviceFingerprint().fingerprintId,
+          isIncognito: isIncognitoClient
         });
       }
 
@@ -2430,18 +2483,33 @@ export default function App() {
       }
       if ((data as any).globalAppearance) {
         const ga = (data as any).globalAppearance;
-        if (ga.theme) setActiveTheme(ga.theme);
-        if (ga.fontFamily) setFontFamily(ga.fontFamily);
-        if (ga.fontWeight) setChatFontWeight(ga.fontWeight);
-        if (ga.wallpaper) setActiveWallpaper(ga.wallpaper);
-        if (ga.bubbleStyle) setBubbleStyle(ga.bubbleStyle);
-        // The shared appearance is authoritative. Keep both branding state values
-        // aligned so a cached local banner cannot win the first render.
+        if (ga.theme) {
+          setActiveTheme(ga.theme);
+          try { localStorage.setItem('soqoor_theme', ga.theme); } catch {}
+        }
+        if (ga.fontFamily) {
+          setFontFamily(ga.fontFamily);
+          try { localStorage.setItem('soqoor_font_family', ga.fontFamily); } catch {}
+        }
+        if (ga.fontWeight) {
+          setChatFontWeight(ga.fontWeight);
+          try { localStorage.setItem('soqoor_font_weight', ga.fontWeight); } catch {}
+        }
+        if (ga.wallpaper) {
+          setActiveWallpaper(ga.wallpaper);
+          try { localStorage.setItem('soqoor_wallpaper', ga.wallpaper); } catch {}
+        }
+        if (ga.bubbleStyle) {
+          setBubbleStyle(ga.bubbleStyle);
+          try { localStorage.setItem('soqoor_bubble_style', ga.bubbleStyle); } catch {}
+        }
         if (ga.bannerUrl) {
           setFalconChatBanner(ga.bannerUrl);
+          try { localStorage.setItem('falcon_chat_banner', ga.bannerUrl); } catch {}
         }
         if (ga.logoUrl) {
           setFalconAvatarIcon(ga.logoUrl);
+          try { localStorage.setItem('falcon_avatar_icon', ga.logoUrl); } catch {}
         }
       }
       if ((data as any).recentLogins && Array.isArray((data as any).recentLogins)) {
@@ -3120,6 +3188,8 @@ export default function App() {
     s.on('roomJoined', ({ user }: { user: User }) => {
       setCurrentUser(user);
       currentUserRef.current = user;
+      // Clean Room Mode: Fresh start when entering any room
+      setMessages([]);
     });
 
     s.on('profileUpdated', ({ user }: { user: User }) => {
@@ -3692,7 +3762,9 @@ export default function App() {
           s.emit('restoreSession', {
             sessionToken: savedToken || undefined,
             username: savedUsername || undefined,
-            room: currentRoom
+            room: currentRoom,
+            deviceFingerprint: generateDeviceFingerprint().fingerprintId,
+            isIncognito: isIncognitoClient
           });
         }
       } else {
@@ -3845,7 +3917,8 @@ export default function App() {
       flag: detectedFlag,
       statusQuote: defaultQuote,
       deviceFingerprint: clientFingerprint,
-      isGhost: Boolean(isGhostLogin && canUseGhostLogin)
+      isGhost: Boolean(isGhostLogin && canUseGhostLogin),
+      isIncognito: isIncognitoClient
     });
   };
 
@@ -6369,6 +6442,22 @@ export default function App() {
                     <span className="truncate">{revealedNicksData.country || getCountryNameFromFlag(revealedNicksData.flag) || 'المملكة العربية السعودية'}</span>
                   </div>
                 </div>
+              </div>
+
+              {/* Incognito / Privacy Detection Badge */}
+              <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-300 flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-600">نوع جلسة التصفح:</span>
+                {revealedNicksData.isIncognito ? (
+                  <span className="px-2 py-0.5 rounded-full bg-purple-100 border border-purple-300 text-purple-900 font-black text-[11px] flex items-center gap-1 shadow-xs">
+                    <span>🕵️</span>
+                    <span>وضع التصفح المتخفي (Incognito Mode)</span>
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold text-[11px] flex items-center gap-1">
+                    <span>🌐</span>
+                    <span>تصفح عادي / قياسي</span>
+                  </span>
+                )}
               </div>
 
               {/* Phone / Hardware Fingerprint Card (بصمة الهاتف والجهاز المادية) */}
@@ -11773,11 +11862,12 @@ export default function App() {
                 openUserProfile(user);
               }}
               onSwitchRoom={(roomId) => {
+                setMessages([]);
                 socket?.emit("joinRoom", {
                   username: currentUser.username,
                   room: roomId,
-                  loginType: "member",
-                  password: "123",
+                  flag: currentUser.flag,
+                  statusQuote: currentUser.statusQuote,
                   isGhost: currentUser.isGhost
                 });
                 showToast(`جاري الانتقال إلى [${roomId}]...`, "info");

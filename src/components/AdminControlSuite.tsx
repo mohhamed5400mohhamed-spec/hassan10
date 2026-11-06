@@ -98,6 +98,7 @@ export interface User {
   honorBadge?: string;
   nameBannerUrl?: string;
   isPmDisabled?: boolean;
+  isIncognito?: boolean;
   isJailed?: boolean;
   joinedAt?: number;
 }

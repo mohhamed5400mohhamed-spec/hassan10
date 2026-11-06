@@ -125,6 +125,7 @@ export interface User {
   bubbleStyle?: string;
   isPmDisabled?: boolean;
   isGhost?: boolean; // حالة الدخول المخفي / المتخفي
+  isIncognito?: boolean; // كشف وضع التصفح المتخفي في المتصفح
   engagement?: MemberEngagement;
 }
 

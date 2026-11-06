@@ -123,7 +123,12 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({ onSendVoice, onCan
         ? 'audio/ogg;codecs=opus'
         : 'audio/mp4';
 
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      let mediaRecorder: MediaRecorder;
+      try {
+        mediaRecorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 24000 });
+      } catch {
+        mediaRecorder = new MediaRecorder(stream, { mimeType });
+      }
       mediaRecorderRef.current = mediaRecorder;
 
       mediaRecorder.ondataavailable = (event) => {
